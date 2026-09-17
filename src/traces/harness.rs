@@ -84,6 +84,22 @@ impl Harness {
     }
 }
 
+/// Normalize a recall filter without claiming that the native indexer can parse that harness.
+/// External ingestion stores any valid lowercase harness slug; native aliases still map to their
+/// canonical stored facet.
+pub fn normalize_filter(value: &str) -> Result<String> {
+    if value == "claude" || value == "claude_code" {
+        return Ok("claude_code".into());
+    }
+    let mut chars = value.chars();
+    if !matches!(chars.next(), Some('a'..='z'))
+        || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(anyhow!("invalid harness (expected [a-z][a-z0-9_-]*)"));
+    }
+    Ok(value.to_string())
+}
+
 /// hermes' session store — a single SQLite file under `$HOME`, not a session dir like the others.
 pub const HERMES_DB: &str = ".hermes/state.db";
 
@@ -158,6 +174,14 @@ mod tests {
         assert_eq!(Harness::parse("pi").unwrap(), Harness::Pi);
         assert_eq!(Harness::parse("hermes").unwrap(), Harness::Hermes);
         assert!(Harness::parse("gpt").is_err());
+    }
+
+    #[test]
+    fn recall_filter_accepts_external_slugs_without_native_parser_support() {
+        assert_eq!(normalize_filter("claude").unwrap(), "claude_code");
+        assert_eq!(normalize_filter("opencode").unwrap(), "opencode");
+        assert!(normalize_filter("OpenCode").is_err());
+        assert!(Harness::parse("opencode").is_err());
     }
 
     #[test]

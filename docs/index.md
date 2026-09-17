@@ -14,6 +14,9 @@ With **no argument**, in a terminal, `funes index` sweeps every supported agent'
 finds — `~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.hermes/state.db` — into
 one memory, then offers to finish any deeper work left. Scope it to a single agent with `--harness`:
 
+External integrations use [`funes ingest`](ingest.md). It feeds the same indexing pipeline without
+adding a native transcript parser or a new `funes index --harness` value.
+
 ```bash
 funes index --harness codex        # only ~/.codex/sessions
 ```
