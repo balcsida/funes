@@ -10,6 +10,7 @@ use std::io::{BufRead, Read};
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Envelope {
     version: u64,
     harness: String,
@@ -19,6 +20,7 @@ struct Envelope {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InputTurn {
     turn_uuid: String,
     parent_uuid: Option<String>,
@@ -29,6 +31,7 @@ struct InputTurn {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InputBlock {
     block_type: String,
     text: String,
@@ -71,6 +74,10 @@ impl IngestSource {
         }
         Ok(Self { label, sessions })
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
 }
 
 fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
@@ -79,9 +86,11 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
     }
     let harness = crate::traces::harness::normalize_filter(&input.harness)?;
     validate_id("session_id", &input.session_id)?;
-    if input.cwd.is_empty() {
-        bail!("cwd must not be empty");
+    if !std::path::Path::new(&input.cwd).is_absolute() {
+        bail!("cwd must be an absolute path");
     }
+    let workdir = crate::traces::jsonl::workdir_of_cwd(&input.cwd)
+        .ok_or_else(|| anyhow!("cwd must identify a working directory"))?;
     let session_id = format!("{harness}:{}", input.session_id);
     let mut ids = HashSet::new();
     let mut previous_seq = None;
@@ -94,15 +103,25 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
         if previous_seq.is_some_and(|seq| turn.seq <= seq) {
             bail!("turn seq values must be strictly increasing");
         }
+        if turn.seq < 0 {
+            bail!("turn seq values must be nonnegative");
+        }
         previous_seq = Some(turn.seq);
         chrono::DateTime::parse_from_rfc3339(&turn.ts).context("invalid timestamp")?;
-        validate_slug("role", &turn.role)?;
+        if !matches!(turn.role.as_str(), "user" | "assistant" | "tool") {
+            bail!("role must be user, assistant, or tool");
+        }
         if let Some(parent) = &turn.parent_uuid {
             validate_id("parent_uuid", parent)?;
         }
         let mut blocks = Vec::with_capacity(turn.blocks.len());
         for block in turn.blocks {
-            validate_slug("block_type", &block.block_type)?;
+            if !matches!(
+                block.block_type.as_str(),
+                "text" | "thinking" | "tool_use" | "tool_result"
+            ) {
+                bail!("block_type must be text, thinking, tool_use, or tool_result");
+            }
             if let Some(name) = &block.tool_name {
                 validate_id("tool_name", name)?;
             }
@@ -120,7 +139,7 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
             format: crate::traces::FORMAT_VERSION,
             session_id: session_id.clone(),
             cwd: Some(input.cwd.clone()),
-            workdir: input.cwd.clone(),
+            workdir: workdir.clone(),
             turn_uuid: format!("{harness}:{}", turn.turn_uuid),
             parent_uuid: turn.parent_uuid.map(|id| format!("{harness}:{id}")),
             seq: turn.seq,
@@ -132,16 +151,6 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
         });
     }
     Ok((session_id, turns))
-}
-
-fn validate_slug(field: &str, value: &str) -> Result<()> {
-    let mut chars = value.chars();
-    if !matches!(chars.next(), Some('a'..='z'))
-        || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-    {
-        return Err(anyhow!("{field} must match [a-z][a-z0-9_-]*"));
-    }
-    Ok(())
 }
 
 fn validate_id(field: &str, value: &str) -> Result<()> {
@@ -208,5 +217,53 @@ mod tests {
         let input = format!("{VALID}\n{}\n", VALID.replace("\"version\":1", "\"version\":2"));
         let error = IngestSource::read(Cursor::new(input), "stdin").err().unwrap();
         assert!(error.to_string().contains("line 2"), "{error:#}");
+    }
+
+    #[test]
+    fn rejects_values_outside_the_wire_contract() {
+        for invalid in [
+            VALID.replace("\"role\":\"user\"", "\"role\":\"system\""),
+            VALID.replace("\"block_type\":\"text\"", "\"block_type\":\"image\""),
+            VALID.replace("\"seq\":0", "\"seq\":-1"),
+            VALID.replace("\"cwd\":\"/work\"", "\"cwd\":\"relative/work\""),
+            VALID.replace("\"version\":1", "\"version\":1,\"extra\":true"),
+            VALID.replace("\"seq\":0", "\"seq\":0,\"extra\":true"),
+            VALID.replace("\"text\":\"hello\"", "\"text\":\"hello\",\"extra\":true"),
+        ] {
+            assert!(
+                IngestSource::read(Cursor::new(invalid), "stdin").is_err(),
+                "accepted invalid input"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizes_workdir_and_preserves_tool_metadata() {
+        let input = VALID
+            .replace("\"block_type\":\"text\"", "\"block_type\":\"tool_use\"")
+            .replace("\"tool_name\":null", "\"tool_name\":\"bash\"")
+            .replace("\"tool_use_id\":null", "\"tool_use_id\":\"call_1\"");
+        let source = IngestSource::read(Cursor::new(input), "stdin").unwrap();
+        let turn = source.read(&source.units().unwrap()[0]).unwrap().remove(0);
+        assert_eq!(turn.workdir, "-work");
+        assert_eq!(turn.blocks[0].tool_name.as_deref(), Some("bash"));
+        assert_eq!(turn.blocks[0].tool_use_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn rejects_input_over_64_mib() {
+        let input = vec![b' '; MAX_INPUT_BYTES as usize + 1];
+        assert!(IngestSource::read(Cursor::new(input), "stdin").is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_session_and_turn_identities_within_input() {
+        let duplicate_session = format!("{VALID}\n{VALID}\n");
+        assert!(IngestSource::read(Cursor::new(duplicate_session), "stdin").is_err());
+
+        let mut value: serde_json::Value = serde_json::from_str(VALID).unwrap();
+        let turn = value["turns"][0].clone();
+        value["turns"].as_array_mut().unwrap().push(turn);
+        assert!(IngestSource::read(Cursor::new(serde_json::to_string(&value).unwrap()), "stdin").is_err());
     }
 }

@@ -21,6 +21,7 @@ use lance::dataset::{Dataset, WriteParams};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
 use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -883,10 +884,15 @@ pub async fn run_index(path: &Path, no_thinking: bool, max_sessions: Option<usiz
     run_index_roots(&[(path.to_path_buf(), None)], no_thinking, max_sessions, true).await
 }
 
-/// Index a fully validated external-ingestion source through the same redaction, chunking,
-/// embedding, deduplication, and state pipeline as native transcripts.
-pub async fn run_ingest(source: Box<dyn source::TraceSource>, no_thinking: bool) -> Result<()> {
-    index_sources(vec![source], no_thinking, true).await
+/// Validate external-session JSONL as a whole, then use the same redaction, chunking, embedding,
+/// deduplication, and state pipeline as native transcripts. Empty input returns before opening the
+/// model or memory.
+pub async fn run_ingest(input: impl BufRead, no_thinking: bool) -> Result<()> {
+    let source = crate::traces::ingest::IngestSource::read(input, "input")?;
+    if source.is_empty() {
+        return Ok(());
+    }
+    index_sources(vec![Box::new(source)], no_thinking, true).await
 }
 
 /// A first interactive index estimated at ≥ this many seconds prompts before continuing.

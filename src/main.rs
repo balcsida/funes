@@ -511,22 +511,13 @@ async fn main() -> Result<()> {
                 index::run_index_roots(&roots, no_thinking, limit, yes).await
             }
         }
-        Cmd::Ingest { path, no_thinking } => {
-            let label = path
-                .as_deref()
-                .filter(|path| *path != std::path::Path::new("-"))
-                .map_or_else(|| "stdin".to_string(), |path| path.display().to_string());
-            let source = match path.as_deref() {
-                None => funes::traces::ingest::IngestSource::read(std::io::stdin().lock(), label)?,
-                Some(path) if path == std::path::Path::new("-") => {
-                    funes::traces::ingest::IngestSource::read(std::io::stdin().lock(), label)?
-                }
-                Some(path) => {
-                    funes::traces::ingest::IngestSource::read(BufReader::new(std::fs::File::open(path)?), label)?
-                }
-            };
-            index::run_ingest(Box::new(source), no_thinking).await
-        }
+        Cmd::Ingest { path, no_thinking } => match path.as_deref() {
+            None => index::run_ingest(std::io::stdin().lock(), no_thinking).await,
+            Some(path) if path == std::path::Path::new("-") => {
+                index::run_ingest(std::io::stdin().lock(), no_thinking).await
+            }
+            Some(path) => index::run_ingest(BufReader::new(std::fs::File::open(path)?), no_thinking).await,
+        },
         Cmd::Status { memory } => {
             print!("{}", recall::status(memory::Memory::resolve(memory)).await?);
             // Show the status body before the (bounded, best-effort) update check, so a slow or

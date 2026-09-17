@@ -9,10 +9,17 @@ Each line is one complete version 1 session:
 {"version":1,"harness":"opencode","session_id":"ses_example","cwd":"/work/project","turns":[{"turn_uuid":"msg_example","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"Explain this project","tool_name":null,"tool_use_id":null}]}]}
 ```
 
-Funes validates the entire input before changing memory. The input limit is 64 MiB; timestamps must
-be RFC 3339; harness, role, and block-type names must match `[a-z][a-z0-9_-]*`; IDs must be nonempty;
-and turn sequence numbers must increase within a session. Session and turn IDs are stored as
-`<harness>:<id>`, so external IDs cannot collide with another harness.
+Funes validates the entire input before changing memory. The input limit is 64 MiB. `cwd` must be
+an absolute path and is normalized to the same internal workdir facet as native transcripts.
+Timestamps must be RFC 3339, sequence numbers must be nonnegative and strictly increase within a
+session, and IDs must be nonempty. Roles are `user`, `assistant`, or `tool`; block types are `text`,
+`thinking`, `tool_use`, or `tool_result`. Harness names match `[a-z][a-z0-9_-]*`. Unknown fields are
+rejected at every level.
+
+Session and turn IDs are stored as `<harness>:<id>`, so identical source IDs from different
+harnesses do not collide. Producers must treat submitted IDs as immutable: correcting content means
+sending a new ID. Re-sending an existing ID with changed content is ignored by append-only chunk-ID
+deduplication.
 
 Imports use the normal redaction, chunking, embedding, and append-only deduplication pipeline.
 Re-sending the same complete session is a no-op. Send only stable, completed message content;

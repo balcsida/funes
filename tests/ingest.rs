@@ -1,7 +1,21 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const SESSION: &str = r#"{"version":1,"harness":"opencode","session_id":"ses_1","cwd":"/work/project","turns":[{"turn_uuid":"msg_1","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"external memory text","tool_name":null,"tool_use_id":null},{"block_type":"thinking","text":"private chain of thought","tool_name":null,"tool_use_id":null}]}]}"#;
+const SESSION: &str = r#"{"version":1,"harness":"opencode","session_id":"ses_1","cwd":"/work/project","turns":[{"turn_uuid":"msg_1","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"external memory text","tool_name":null,"tool_use_id":null},{"block_type":"thinking","text":"private chain of thought","tool_name":null,"tool_use_id":null},{"block_type":"tool_use","text":"cargo test","tool_name":"bash","tool_use_id":"call_1"}]}]}"#;
+
+fn session(harness: &str, session_id: &str, text: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(SESSION).unwrap();
+    value["harness"] = harness.into();
+    value["session_id"] = session_id.into();
+    value["turns"][0]["turn_uuid"] = format!("msg_{session_id}").into();
+    value["turns"][0]["blocks"] = serde_json::json!([{
+        "block_type": "text",
+        "text": text,
+        "tool_name": null,
+        "tool_use_id": null
+    }]);
+    serde_json::to_string(&value).unwrap()
+}
 
 fn run(home: &std::path::Path, args: &[&str], stdin: Option<&str>) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_funes"));
@@ -50,6 +64,7 @@ fn ingest_indexes_namespaced_session_once_and_honors_no_thinking() {
     assert_success(&get);
     let text = String::from_utf8(get.stdout).unwrap();
     assert!(text.contains("external memory text"), "{text}");
+    assert!(text.contains("[tool_use bash] cargo test"), "{text}");
     assert!(!text.contains("private chain of thought"), "{text}");
 
     let second = run(home.path(), &["ingest", "--no-thinking"], Some(SESSION));
@@ -62,11 +77,67 @@ fn ingest_indexes_namespaced_session_once_and_honors_no_thinking() {
 }
 
 #[test]
-fn ingest_rejects_whole_input_before_creating_memory() {
+fn ingest_bulk_incremental_and_cross_harness_replay_are_append_only() {
     let home = tempfile::tempdir().unwrap();
-    let input = format!("{SESSION}\n{}\n", SESSION.replace("\"version\":1", "\"version\":2"));
-    let out = run(home.path(), &["ingest"], Some(&input));
-    assert!(!out.status.success());
+    let opencode = session("opencode", "same", "from opencode");
+    let codex = session("codex", "same", "from codex");
+    let bulk = format!("{opencode}\n{codex}\n");
+
+    let first = run(home.path(), &["ingest"], Some(&bulk));
+    assert_success(&first);
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    assert!(first_stdout.contains("sessions=2"), "{first_stdout}");
+    assert!(first_stdout.contains("chunks=2"), "{first_stdout}");
+
+    for (id, text) in [("opencode:same", "from opencode"), ("codex:same", "from codex")] {
+        let get = run(home.path(), &["get", id], None);
+        assert_success(&get);
+        assert!(String::from_utf8_lossy(&get.stdout).contains(text));
+    }
+
+    let rewritten = session("opencode", "same", "rewritten content is ignored");
+    let replay_input = format!("{rewritten}\n{codex}\n");
+    let replay = run(home.path(), &["ingest"], Some(&replay_input));
+    assert_success(&replay);
+    assert!(String::from_utf8_lossy(&replay.stdout).contains("chunks=0"));
+    let get = run(home.path(), &["get", "opencode:same"], None);
+    assert_success(&get);
+    let original = String::from_utf8_lossy(&get.stdout);
+    assert!(original.contains("from opencode"));
+    assert!(!original.contains("rewritten content is ignored"));
+
+    let incremental = session("opencode", "new", "incremental row");
+    let added = run(home.path(), &["ingest"], Some(&incremental));
+    assert_success(&added);
+    assert!(String::from_utf8_lossy(&added.stdout).contains("chunks=1"));
+    let get = run(home.path(), &["get", "opencode:new"], None);
+    assert_success(&get);
+    assert!(String::from_utf8_lossy(&get.stdout).contains("incremental row"));
+}
+
+#[test]
+fn ingest_rejects_whole_input_before_creating_memory() {
+    let invalid = [
+        format!("{SESSION}\n{}\n", SESSION.replace("\"version\":1", "\"version\":2")),
+        SESSION.replace("\"role\":\"user\"", "\"role\":\"system\""),
+        SESSION.replace("\"seq\":0", "\"seq\":-1"),
+        SESSION.replace("\"cwd\":\"/work/project\"", "\"cwd\":\"relative\""),
+        SESSION.replace("\"version\":1", "\"version\":1,\"unknown\":true"),
+        " ".repeat(64 * 1024 * 1024 + 1),
+    ];
+    for input in invalid {
+        let home = tempfile::tempdir().unwrap();
+        let out = run(home.path(), &["ingest"], Some(&input));
+        assert!(!out.status.success());
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn ingest_empty_input_is_a_noop() {
+    let home = tempfile::tempdir().unwrap();
+    let out = run(home.path(), &["ingest"], Some(""));
+    assert_success(&out);
     assert!(!home.path().join("memory.lance").exists());
     assert!(!home.path().join("state.json").exists());
 }
