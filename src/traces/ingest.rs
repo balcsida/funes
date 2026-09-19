@@ -47,6 +47,8 @@ pub struct IngestSource {
 }
 
 impl IngestSource {
+    /// Read and validate versioned session JSONL, rejecting input over 64 MiB.
+    /// `label` identifies the source in progress messages and read errors.
     pub fn read(reader: impl BufRead, label: impl Into<String>) -> Result<Self> {
         let label = label.into();
         let mut bytes = Vec::new();
@@ -74,6 +76,7 @@ impl IngestSource {
         Ok(Self { label, sessions })
     }
 
+    /// Whether no session envelopes were supplied, so callers can skip model and memory setup.
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
