@@ -111,7 +111,11 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
             bail!("turn seq values must be nonnegative");
         }
         previous_seq = Some(turn.seq);
-        chrono::DateTime::parse_from_rfc3339(&turn.ts).context("invalid timestamp")?;
+        // UTC at fixed precision, so string order is chronological order for `sessions`.
+        let ts = chrono::DateTime::parse_from_rfc3339(&turn.ts)
+            .context("invalid timestamp")?
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         if !matches!(turn.role.as_str(), "user" | "assistant" | "tool") {
             bail!("role must be user, assistant, or tool");
         }
@@ -147,7 +151,7 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
             turn_uuid: format!("{harness}:{}", turn.turn_uuid),
             parent_uuid: turn.parent_uuid.map(|id| format!("{harness}:{id}")),
             seq: turn.seq,
-            ts: turn.ts,
+            ts,
             role: turn.role,
             blocks,
             source_path: format!("ingest:{session_id}"),
@@ -255,6 +259,14 @@ mod tests {
         assert_eq!(turn.workdir, "-work");
         assert_eq!(turn.blocks[0].tool_name.as_deref(), Some("bash"));
         assert_eq!(turn.blocks[0].tool_use_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn normalizes_timestamps_to_sortable_utc() {
+        let input = VALID.replace("2026-09-17T12:00:00Z", "2026-09-17T01:30:00.5+05:00");
+        let source = IngestSource::read(Cursor::new(input), "stdin").unwrap();
+        let turn = source.read(&source.units().unwrap()[0]).unwrap().remove(0);
+        assert_eq!(turn.ts, "2026-09-16T20:30:00.500Z");
     }
 
     #[test]
