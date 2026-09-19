@@ -84,10 +84,9 @@ impl Harness {
     }
 }
 
-/// Normalize a recall filter without claiming that the native indexer can parse that harness.
-/// External ingestion stores any valid lowercase harness slug; native aliases still map to their
-/// canonical stored facet.
-pub fn normalize_filter(value: &str) -> Result<String> {
+/// Validate a harness name from external ingestion and normalize native aliases to their stored facet.
+/// External slugs need no native transcript parser.
+pub fn normalize_ingest_harness(value: &str) -> Result<String> {
     if value == "claude" || value == "claude_code" {
         return Ok("claude_code".into());
     }
@@ -177,10 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn recall_filter_accepts_external_slugs_without_native_parser_support() {
-        assert_eq!(normalize_filter("claude").unwrap(), "claude_code");
-        assert_eq!(normalize_filter("opencode").unwrap(), "opencode");
-        assert!(normalize_filter("OpenCode").is_err());
+    fn external_ingest_harnesses_do_not_require_native_parser_support() {
+        assert_eq!(normalize_ingest_harness("claude").unwrap(), "claude_code");
+        assert_eq!(normalize_ingest_harness("opencode").unwrap(), "opencode");
+        assert!(normalize_ingest_harness("OpenCode").is_err());
         assert!(Harness::parse("opencode").is_err());
     }
 

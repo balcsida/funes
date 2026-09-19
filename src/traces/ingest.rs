@@ -87,7 +87,7 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
         bail!("unsupported ingest version (expected 1)");
     }
     validate_id("harness", &input.harness)?;
-    let harness = crate::traces::harness::normalize_filter(&input.harness)?;
+    let harness = crate::traces::harness::normalize_ingest_harness(&input.harness)?;
     validate_id("session_id", &input.session_id)?;
     if input.session_id.contains(':') {
         bail!("session_id must not contain ':'");
@@ -261,6 +261,8 @@ mod tests {
             .replace("\"tool_use_id\":null", "\"tool_use_id\":\"call_1\"");
         let source = IngestSource::read(Cursor::new(input), "stdin").unwrap();
         let turn = source.read(&source.units().unwrap()[0]).unwrap().remove(0);
+        assert_eq!(turn.format, crate::traces::FORMAT_VERSION);
+        assert_eq!(turn.cwd.as_deref(), Some("/work"));
         assert_eq!(turn.workdir, "-work");
         assert_eq!(turn.blocks[0].tool_name.as_deref(), Some("bash"));
         assert_eq!(turn.blocks[0].tool_use_id.as_deref(), Some("call_1"));

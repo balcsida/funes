@@ -3,6 +3,9 @@
 `funes ingest [PATH|-] [--no-thinking]` imports sessions produced by external integrations. It
 reads newline-delimited JSON from `PATH`, or standard input when the path is omitted or `-`.
 
+This command accepts session envelopes. For [per-turn `.funes.jsonl` files](funes-jsonl.md), use
+`funes index`.
+
 Each line is one complete version 1 session:
 
 ```json
