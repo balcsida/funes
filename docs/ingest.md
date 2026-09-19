@@ -12,7 +12,8 @@ Each line is one complete version 1 session:
 Funes validates the entire input before changing memory. The input limit is 64 MiB. `cwd` must be
 an absolute path and is normalized to the same internal workdir facet as native transcripts.
 Timestamps must be RFC 3339, sequence numbers must be nonnegative and strictly increase within a
-session, and IDs must be nonempty. Roles are `user`, `assistant`, or `tool`; block types are `text`,
+session, and IDs must be nonempty. Raw session IDs must not contain `:`; turn, parent, and tool IDs
+may contain it. Roles are `user`, `assistant`, or `tool`; block types are `text`,
 `thinking`, `tool_use`, or `tool_result`. Harness names match `[a-z][a-z0-9_-]*`. Unknown fields are
 rejected at every level.
 

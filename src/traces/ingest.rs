@@ -86,6 +86,9 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
     }
     let harness = crate::traces::harness::normalize_filter(&input.harness)?;
     validate_id("session_id", &input.session_id)?;
+    if input.session_id.contains(':') {
+        bail!("session_id must not contain ':'");
+    }
     if !std::path::Path::new(&input.cwd).is_absolute() {
         bail!("cwd must be an absolute path");
     }
@@ -249,6 +252,22 @@ mod tests {
         assert_eq!(turn.workdir, "-work");
         assert_eq!(turn.blocks[0].tool_name.as_deref(), Some("bash"));
         assert_eq!(turn.blocks[0].tool_use_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn accepts_colons_outside_session_ids() {
+        let input = VALID
+            .replace("\"turn_uuid\":\"msg_1\"", "\"turn_uuid\":\"turn:1\"")
+            .replace("\"parent_uuid\":null", "\"parent_uuid\":\"parent:1\"")
+            .replace("\"block_type\":\"text\"", "\"block_type\":\"tool_use\"")
+            .replace("\"tool_name\":null", "\"tool_name\":\"shell:local\"")
+            .replace("\"tool_use_id\":null", "\"tool_use_id\":\"call:1\"");
+        let source = IngestSource::read(Cursor::new(input), "stdin").unwrap();
+        let turn = source.read(&source.units().unwrap()[0]).unwrap().remove(0);
+        assert_eq!(turn.turn_uuid, "opencode:turn:1");
+        assert_eq!(turn.parent_uuid.as_deref(), Some("opencode:parent:1"));
+        assert_eq!(turn.blocks[0].tool_name.as_deref(), Some("shell:local"));
+        assert_eq!(turn.blocks[0].tool_use_id.as_deref(), Some("call:1"));
     }
 
     #[test]

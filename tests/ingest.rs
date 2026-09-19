@@ -5,6 +5,13 @@ use arrow_array::{Int64Array, StringArray};
 
 const SESSION: &str = r#"{"version":1,"harness":"opencode","session_id":"ses_1","cwd":"/work/project","turns":[{"turn_uuid":"msg_1","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"external memory text","tool_name":null,"tool_use_id":null},{"block_type":"thinking","text":"private chain of thought","tool_name":null,"tool_use_id":null},{"block_type":"tool_use","text":"cargo test","tool_name":"bash","tool_use_id":"call_1"}]}]}"#;
 
+const COLLISION: &str = concat!(
+    r#"{"version":1,"harness":"opencode","session_id":"a","cwd":"/work","turns":[{"turn_uuid":"x:opencode:y","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"first collision sentinel","tool_name":null,"tool_use_id":null}]}]}"#,
+    "\n",
+    r#"{"version":1,"harness":"opencode","session_id":"a:opencode:x","cwd":"/work","turns":[{"turn_uuid":"y","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"second collision sentinel","tool_name":null,"tool_use_id":null}]}]}"#,
+    "\n"
+);
+
 fn session(harness: &str, session_id: &str, text: &str) -> String {
     let mut value: serde_json::Value = serde_json::from_str(SESSION).unwrap();
     value["harness"] = harness.into();
@@ -241,6 +248,14 @@ fn ingest_rejects_whole_input_before_creating_memory() {
         assert!(!out.status.success());
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn ingest_rejects_colon_session_collision_before_creating_memory() {
+    let home = tempfile::tempdir().unwrap();
+    let out = run(home.path(), &["ingest"], Some(COLLISION));
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }
 
 #[test]
