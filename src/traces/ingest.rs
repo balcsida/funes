@@ -4,7 +4,7 @@ use super::{Block, Turn};
 use crate::traces::source::{TraceSource, Unit};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, Read};
 
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -43,7 +43,7 @@ struct InputBlock {
 /// invalid later line cannot leave an earlier session committed to memory.
 pub struct IngestSource {
     label: String,
-    sessions: Vec<(String, Vec<Turn>)>,
+    sessions: BTreeMap<String, Vec<Turn>>,
 }
 
 impl IngestSource {
@@ -58,19 +58,18 @@ impl IngestSource {
             bail!("ingest input exceeds 64 MiB");
         }
         let text = std::str::from_utf8(&bytes).context("ingest input is not UTF-8")?;
-        let mut sessions = Vec::new();
-        let mut session_ids = HashSet::new();
+        let mut sessions = BTreeMap::new();
         for (line_index, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 bail!("line {} is empty", line_index + 1);
             }
             let envelope: Envelope =
                 serde_json::from_str(line).with_context(|| format!("invalid JSON on line {}", line_index + 1))?;
-            let session = validate(envelope).with_context(|| format!("invalid session on line {}", line_index + 1))?;
-            if !session_ids.insert(session.0.clone()) {
+            let (id, turns) =
+                validate(envelope).with_context(|| format!("invalid session on line {}", line_index + 1))?;
+            if sessions.insert(id, turns).is_some() {
                 bail!("duplicate session on line {}", line_index + 1);
             }
-            sessions.push(session);
         }
         Ok(Self { label, sessions })
     }
@@ -176,8 +175,8 @@ impl TraceSource for IngestSource {
     fn units(&self) -> Result<Vec<Unit>> {
         Ok(self
             .sessions
-            .iter()
-            .map(|(id, _)| Unit {
+            .keys()
+            .map(|id| Unit {
                 key: format!("ingest:{id}"),
                 signature: None,
                 is_subagent: false,
@@ -186,10 +185,10 @@ impl TraceSource for IngestSource {
     }
 
     fn read(&self, unit: &Unit) -> Result<Vec<Turn>> {
-        self.sessions
-            .iter()
-            .find(|(id, _)| unit.key == format!("ingest:{id}"))
-            .map(|(_, turns)| turns.clone())
+        unit.key
+            .strip_prefix("ingest:")
+            .and_then(|id| self.sessions.get(id))
+            .cloned()
             .ok_or_else(|| anyhow!("unknown ingest unit {:?}", unit.key))
     }
 
@@ -236,7 +235,10 @@ mod tests {
             VALID.replace("\"seq\":0", "\"seq\":-1"),
             VALID.replace("\"cwd\":\"/work\"", "\"cwd\":\"relative/work\""),
             VALID.replace("\"cwd\":\"/work\"", &format!("\"cwd\":\"/{}\"", "w".repeat(4096))),
-            VALID.replace("\"harness\":\"opencode\"", &format!("\"harness\":\"{}\"", "o".repeat(1025))),
+            VALID.replace(
+                "\"harness\":\"opencode\"",
+                &format!("\"harness\":\"{}\"", "o".repeat(1025)),
+            ),
             VALID.replace("\"version\":1", "\"version\":1,\"extra\":true"),
             VALID.replace("\"seq\":0", "\"seq\":0,\"extra\":true"),
             VALID.replace("\"text\":\"hello\"", "\"text\":\"hello\",\"extra\":true"),
