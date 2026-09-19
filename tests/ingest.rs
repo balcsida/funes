@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use arrow_array::{Int64Array, StringArray};
+
 const SESSION: &str = r#"{"version":1,"harness":"opencode","session_id":"ses_1","cwd":"/work/project","turns":[{"turn_uuid":"msg_1","parent_uuid":null,"seq":0,"ts":"2026-09-17T12:00:00Z","role":"user","blocks":[{"block_type":"text","text":"external memory text","tool_name":null,"tool_use_id":null},{"block_type":"thinking","text":"private chain of thought","tool_name":null,"tool_use_id":null},{"block_type":"tool_use","text":"cargo test","tool_name":"bash","tool_use_id":"call_1"}]}]}"#;
 
 fn session(harness: &str, session_id: &str, text: &str) -> String {
@@ -14,6 +16,79 @@ fn session(harness: &str, session_id: &str, text: &str) -> String {
         "tool_name": null,
         "tool_use_id": null
     }]);
+    serde_json::to_string(&value).unwrap()
+}
+
+fn grown_session(turns: usize) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(&session("opencode", "grown", "turn 0")).unwrap();
+    for seq in 1..turns {
+        value["turns"].as_array_mut().unwrap().push(serde_json::json!({
+            "turn_uuid": format!("msg_grown_{seq}"),
+            "parent_uuid": "msg_grown",
+            "seq": seq,
+            "ts": format!("2026-09-17T12:00:{seq:02}Z"),
+            "role": "assistant",
+            "blocks": [{
+                "block_type": "text",
+                "text": format!("turn {seq}"),
+                "tool_name": null,
+                "tool_use_id": null
+            }]
+        }));
+    }
+    serde_json::to_string(&value).unwrap()
+}
+
+async fn stored_rows(home: &std::path::Path) -> Vec<(String, String, String, i64, String)> {
+    let memory = funes::memory::Memory::parse(&home.join("memory").to_string_lossy());
+    let dataset = memory.open().await.unwrap();
+    let batches =
+        funes::memory::dataset::scan_rows(&dataset, &["id", "session_id", "turn_uuid", "seq", "text"], None, None)
+            .await
+            .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let strings = |name| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+        };
+        let ids = strings("id");
+        let sessions = strings("session_id");
+        let turns = strings("turn_uuid");
+        let texts = strings("text");
+        let seqs = batch
+            .column_by_name("seq")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                ids.value(row).into(),
+                sessions.value(row).into(),
+                turns.value(row).into(),
+                seqs.value(row),
+                texts.value(row).into(),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+fn duplicate_turn(same_id: bool) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(SESSION).unwrap();
+    let mut turn = value["turns"][0].clone();
+    if same_id {
+        turn["seq"] = 1.into();
+    } else {
+        turn["turn_uuid"] = "different_turn".into();
+    }
+    value["turns"].as_array_mut().unwrap().push(turn);
     serde_json::to_string(&value).unwrap()
 }
 
@@ -115,14 +190,49 @@ fn ingest_bulk_incremental_and_cross_harness_replay_are_append_only() {
     assert!(String::from_utf8_lossy(&get.stdout).contains("incremental row"));
 }
 
+#[tokio::test]
+async fn incremental_same_session_matches_fresh_bulk_rows_and_stable_ids() {
+    let incremental_home = tempfile::tempdir().unwrap();
+    let first = grown_session(1);
+    let final_session = grown_session(2);
+
+    assert_success(&run(incremental_home.path(), &["ingest"], Some(&first)));
+    let first_rows = stored_rows(incremental_home.path()).await;
+    assert_eq!(first_rows.len(), 1);
+
+    assert_success(&run(incremental_home.path(), &["ingest"], Some(&final_session)));
+    let incremental_rows = stored_rows(incremental_home.path()).await;
+    assert_eq!(incremental_rows.len(), 2);
+    assert!(incremental_rows.iter().any(|row| row.0 == first_rows[0].0));
+    assert_eq!(
+        incremental_rows
+            .iter()
+            .map(|row| &row.0)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        2
+    );
+
+    assert_success(&run(incremental_home.path(), &["ingest"], Some(&final_session)));
+    assert_eq!(stored_rows(incremental_home.path()).await, incremental_rows);
+
+    let bulk_home = tempfile::tempdir().unwrap();
+    assert_success(&run(bulk_home.path(), &["ingest"], Some(&final_session)));
+    assert_eq!(stored_rows(bulk_home.path()).await, incremental_rows);
+}
+
 #[test]
 fn ingest_rejects_whole_input_before_creating_memory() {
     let invalid = [
         format!("{SESSION}\n{}\n", SESSION.replace("\"version\":1", "\"version\":2")),
         SESSION.replace("\"role\":\"user\"", "\"role\":\"system\""),
+        SESSION.replace("\"block_type\":\"text\"", "\"block_type\":\"image\""),
+        SESSION.replace("2026-09-17T12:00:00Z", "not-a-timestamp"),
         SESSION.replace("\"seq\":0", "\"seq\":-1"),
         SESSION.replace("\"cwd\":\"/work/project\"", "\"cwd\":\"relative\""),
         SESSION.replace("\"version\":1", "\"version\":1,\"unknown\":true"),
+        duplicate_turn(true),
+        duplicate_turn(false),
         " ".repeat(64 * 1024 * 1024 + 1),
     ];
     for input in invalid {

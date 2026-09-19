@@ -224,6 +224,7 @@ mod tests {
         for invalid in [
             VALID.replace("\"role\":\"user\"", "\"role\":\"system\""),
             VALID.replace("\"block_type\":\"text\"", "\"block_type\":\"image\""),
+            VALID.replace("2026-09-17T12:00:00Z", "not-an-rfc3339-timestamp"),
             VALID.replace("\"seq\":0", "\"seq\":-1"),
             VALID.replace("\"cwd\":\"/work\"", "\"cwd\":\"relative/work\""),
             VALID.replace("\"version\":1", "\"version\":1,\"extra\":true"),
@@ -262,8 +263,15 @@ mod tests {
         assert!(IngestSource::read(Cursor::new(duplicate_session), "stdin").is_err());
 
         let mut value: serde_json::Value = serde_json::from_str(VALID).unwrap();
-        let turn = value["turns"][0].clone();
-        value["turns"].as_array_mut().unwrap().push(turn);
+        let mut same_id = value["turns"][0].clone();
+        same_id["seq"] = 1.into();
+        value["turns"].as_array_mut().unwrap().push(same_id);
+        assert!(IngestSource::read(Cursor::new(serde_json::to_string(&value).unwrap()), "stdin").is_err());
+
+        let mut value: serde_json::Value = serde_json::from_str(VALID).unwrap();
+        let mut same_seq = value["turns"][0].clone();
+        same_seq["turn_uuid"] = "msg_2".into();
+        value["turns"].as_array_mut().unwrap().push(same_seq);
         assert!(IngestSource::read(Cursor::new(serde_json::to_string(&value).unwrap()), "stdin").is_err());
     }
 }
