@@ -84,13 +84,14 @@ fn validate(input: Envelope) -> Result<(String, Vec<Turn>)> {
     if input.version != 1 {
         bail!("unsupported ingest version (expected 1)");
     }
+    validate_id("harness", &input.harness)?;
     let harness = crate::traces::harness::normalize_filter(&input.harness)?;
     validate_id("session_id", &input.session_id)?;
     if input.session_id.contains(':') {
         bail!("session_id must not contain ':'");
     }
-    if !std::path::Path::new(&input.cwd).is_absolute() {
-        bail!("cwd must be an absolute path");
+    if input.cwd.len() > 4096 || !std::path::Path::new(&input.cwd).is_absolute() {
+        bail!("cwd must be an absolute path of at most 4096 bytes");
     }
     let workdir = crate::traces::jsonl::workdir_of_cwd(&input.cwd)
         .ok_or_else(|| anyhow!("cwd must identify a working directory"))?;
@@ -230,6 +231,8 @@ mod tests {
             VALID.replace("2026-09-17T12:00:00Z", "not-an-rfc3339-timestamp"),
             VALID.replace("\"seq\":0", "\"seq\":-1"),
             VALID.replace("\"cwd\":\"/work\"", "\"cwd\":\"relative/work\""),
+            VALID.replace("\"cwd\":\"/work\"", &format!("\"cwd\":\"/{}\"", "w".repeat(4096))),
+            VALID.replace("\"harness\":\"opencode\"", &format!("\"harness\":\"{}\"", "o".repeat(1025))),
             VALID.replace("\"version\":1", "\"version\":1,\"extra\":true"),
             VALID.replace("\"seq\":0", "\"seq\":0,\"extra\":true"),
             VALID.replace("\"text\":\"hello\"", "\"text\":\"hello\",\"extra\":true"),
